@@ -1,0 +1,50 @@
+name: Go Lint
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  pull-requests: read
+  # Optional: Allow write access to checks to allow the action to annotate code in the PR.
+  checks: write
+
+env:
+  BIN: "/usr/local/bin"
+  GO_VERSION: "1.22.0"
+  GOLANGCI_LINT_VERSION: "v1.56.2"
+  GOPRIVATE: "github.com/miroapp-dev"
+
+# Cancel previous workflow runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: [self-hosted, none-privileged-k8s, size-m]
+    steps:
+      - uses: actions/checkout@v4.1.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Setup Private Go Vendoring
+        shell: bash
+        run: |
+          git config --global url."https://${{ secrets.GO_DEPENDENCY_GITHUB_TOKEN }}@github.com/miroapp-dev".insteadOf https://github.com/miroapp-dev
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          # Require: The version of golangci-lint to use.
+          # When `install-mode` is `binary` (default) the value can be v1.2 or v1.2.3 or `latest` to use the latest version.
+          # When `install-mode` is `goinstall` the value can be v1.2.3, `latest`, or the hash of a commit.
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-mode: "goinstall"

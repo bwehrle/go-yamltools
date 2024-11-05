@@ -1,0 +1,103 @@
+name: Go Build & Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  checks: write
+  contents: write
+  id-token: write
+  repository-projects: read
+
+env:
+  BIN: "/usr/local/bin"
+  GO_VERSION: "1.22.1"
+  GOPRIVATE: "github.com/miroapp-dev"
+
+# Cancel previous workflow runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: [self-hosted, none-privileged-k8s, size-m]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build
+        run: |
+          git config --global url."https://${{ secrets.GO_DEPENDENCY_GITHUB_TOKEN }}@github.com/miroapp-dev".insteadOf https://github.com/miroapp-dev
+          go build -v ./...
+
+      - name: "Install gotestsum"
+        run: |
+          go install gotest.tools/gotestsum@latest
+
+      - name: Generate Version
+        id: version
+        uses: miroapp-dev/reusable-github-actions/actions/calendar-version@main
+
+      - name: Test
+        env:
+          ARTIFACTORY_USER: ${{ secrets.ARTIFACTORY_CI_BOT_USERNAME }}
+          ARTIFACTORY_PASSWORD: ${{ secrets.ARTIFACTORY_CI_BOT_PASSWORD }}
+          GITHUB_TOKEN: ${{ github.token }}
+        # Fetch branches required for integration testing before running test.
+        run: |
+          gotestsum --junitfile TestResults-${{ env.GO_VERSION }}.xml
+
+      - name: Publish Unit test results
+        uses: mikepenz/action-junit-report@0831a82caad2465c31c6dd929978f640cb42556c
+        if: success() || failure()
+        with:
+          report_paths: TestResults-*.xml
+          check_name: 'Report: Unit Tests - ${{ env.GO_VERSION}}'
+
+      - name: "Upload go tests coverage"
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: Go-results-${{ env.GO_VERSION }}
+          path: TestResults-${{ env.GO_VERSION }}.xml
+
+  publish-release:
+    if: github.event_name != 'pull_request'
+    needs: [ build ]
+    name: "Publish: Release [Binary]"
+    runs-on: [ self-hosted, size-xs ]
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        uses: miroapp-dev/reusable-github-actions/actions/sem-ver@main
+        with:
+          initial_version: "0.0.0"
+          access_token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          promote-type: 'minor'
+
+      # An app token is needed so that the `go-releaser` workflow gets triggered.
+      # You cannot use the ${{ github.token }}. It will successfully create the tag, but then the tag workflow will
+      # not get triggered with the standard token.
+      - id: generate-token
+        uses: miroapp-dev/github-permissionizer/request-token@v1
+        with:
+          repository: miroapp-dev/go-yamltools
+          permissions: |
+            contents: write
+
+      - shell: bash
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.new_version }}
+          GH_TOKEN: ${{ steps.generate-token.outputs.scoped-token }}
+        run: |
+          gh release create $BUILD_VERSION --generate-notes --prerelease

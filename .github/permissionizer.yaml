@@ -1,0 +1,6 @@
+self: miroapp-dev/go-yamltools
+policies:
+  - repository: miroapp-dev/go-yamltools
+    permissions:
+      contents: write
+      packages: write

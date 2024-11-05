@@ -1,0 +1,69 @@
+name: Go Releaser
+
+on:
+  push:
+    tags:
+      - "**"
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+env:
+  GO_VERSION: "1.22.3"
+  GOPRIVATE: "github.com/miroapp-dev"
+
+jobs:
+  goreleaser:
+    runs-on: [self-hosted, size-m]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Private Go Vendoring
+        shell: bash
+        run: |
+          git config --global url."https://${{ secrets.GO_DEPENDENCY_GITHUB_TOKEN }}@github.com/miroapp-dev".insteadOf https://github.com/miroapp-dev
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_TOKEN: ${{ steps.request-token.outputs.scoped-token }}
+          ARTIFACTORY_PRODUCTION_USERNAME: ${{ secrets.ARTIFACTORY_CI_BOT_USERNAME }}
+          ARTIFACTORY_PRODUCTION_SECRET: ${{ secrets.ARTIFACTORY_CI_BOT_PASSWORD }}
+        with:
+          distribution: goreleaser
+          args: release --clean
+          workdir: ${{ github.workspace }}
+
+      - name: Upload assets
+        uses: actions/upload-artifact@v4.3.0
+        with:
+          name: go-yaml-tools
+          path: ${{ github.workspace }}/dist/*
+
+      - name: Generate release changelog
+        run: |
+          gh release view --json apiUrl,author,body,createdAt,name,url > gh_release.json
+          cat gh_release.json
+          jq 'del(.author) | {release_tag: .name, release_url: .url, release_changelog: .body, createdAt, apiUrl} | . += {"release_name": "service-configurator"} '  gh_release.json > gh_final_release.json
+          cat gh_final_release.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Set Release as Latest"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_REF: ${{ github.event.ref }}
+        run: |
+          gh release edit ${GIT_REF##*/} --prerelease=false --latest
+          git tag main -f
+          git push origin refs/tags/main -f
